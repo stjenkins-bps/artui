@@ -37,7 +37,8 @@ jobs:
       - id: package
         run: |
           npm pack
-          echo "filename=$(node -p \"const pkg = require('./package.json'); pkg.name + '-' + pkg.version + '.tgz'\")" >> "$GITHUB_OUTPUT"
+          version=$(node -e 'console.log(require("./package.json").version)')
+          echo "filename=artui-${version}.tgz" >> "$GITHUB_OUTPUT"
 
       - uses: softprops/action-gh-release@v2
         with:
