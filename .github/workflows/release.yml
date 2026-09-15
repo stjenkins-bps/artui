@@ -1,0 +1,45 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm test
+
+      - name: Validate tag matches package version
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          package_version=$(node -p "require('./package.json').version")
+
+          if [ "$tag_version" != "$package_version" ]; then
+            echo "Tag version ($tag_version) does not match package.json version ($package_version)." >&2
+            exit 1
+          fi
+
+      - id: package
+        run: |
+          npm pack
+          echo "filename=$(node -p \"const pkg = require('./package.json'); pkg.name + '-' + pkg.version + '.tgz'\")" >> "$GITHUB_OUTPUT"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: ${{ steps.package.outputs.filename }}

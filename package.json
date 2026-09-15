@@ -1,9 +1,16 @@
 {
   "name": "artui",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "private": true,
   "type": "module",
   "description": "A k9s-inspired terminal client for Azure resources.",
+  "bin": {
+    "artui": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "engines": {
     "node": ">=20"
   },
@@ -11,6 +18,7 @@
     "dev": "tsx src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
+    "prepack": "npm run build",
     "test": "npm run build && node --test dist/**/*.test.js",
     "lint": "eslint .",
     "format": "prettier --write .",

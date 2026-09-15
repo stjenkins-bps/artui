@@ -39,8 +39,24 @@ The TUI currently supports:
 
 ## Install
 
+### Local development
+
 ```bash
 npm install
+```
+
+### From a GitHub release
+
+Each tagged release publishes an installable tarball to the repo's Releases page.
+
+```bash
+npm install -g https://github.com/stjenkins-bps/artui/releases/download/vX.Y.Z/artui-X.Y.Z.tgz
+```
+
+Then run:
+
+```bash
+artui
 ```
 
 ## Run

@@ -1,9 +1,12 @@
+#!/usr/bin/env node
+
 import { ArtuiApp } from "./tui.js";
 
 function printUsage(): void {
   console.log("artui — k9s-inspired Azure resource client");
   console.log("");
   console.log("Usage:");
+  console.log("  artui");
   console.log("  npm run dev");
   console.log("  npm start");
   console.log("");
