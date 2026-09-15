@@ -1,0 +1,33 @@
+{
+  "name": "artui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A k9s-inspired terminal client for Azure resources.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "test": "npm run build && node --test dist/**/*.test.js",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "dependencies": {
+    "blessed": "^0.1.81"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/blessed": "^0.1.25",
+    "@types/node": "^24.5.2",
+    "eslint": "^10.10.0",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.9.6",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.70.0"
+  }
+}
