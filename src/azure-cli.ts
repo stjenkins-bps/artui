@@ -357,6 +357,42 @@ export async function getVirtualMachineDetails(
   };
 }
 
+export async function runVirtualMachineCommand(
+  context: AppContext,
+  vm: VirtualMachine,
+  script: string,
+): Promise<Record<string, unknown>> {
+  if (!context.subscription) {
+    throw new AzureCliError("Select a subscription before running a VM command.", "not-authenticated");
+  }
+
+  const commandId = vm.osType?.toLowerCase().includes("windows") ? "RunPowerShellScript" : "RunShellScript";
+  const args = [
+    "vm",
+    "run-command",
+    "invoke",
+    "--name",
+    vm.name,
+    "--resource-group",
+    vm.resourceGroup,
+    "--subscription",
+    context.subscription.id,
+    "--command-id",
+    commandId,
+    "--scripts",
+    script,
+  ];
+  const result = await azJson<unknown>(args);
+  if (!isRecord(result)) {
+    throw new AzureCliError(
+      "Azure CLI returned an unexpected Run Command response.",
+      "invalid-response",
+      `az ${args.join(" ")}`,
+    );
+  }
+  return result;
+}
+
 export async function listVirtualMachines(context: AppContext): Promise<VirtualMachine[]> {
   if (!context.subscription) return [];
   const args = ["vm", "list", "-d", "--subscription", context.subscription.id];

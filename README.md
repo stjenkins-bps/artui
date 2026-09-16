@@ -83,6 +83,9 @@ npm start
 - `d` — collect full VM details and open JSON in `$VISUAL` / `$EDITOR` in the current terminal
 - `D` — open the same full VM details in artui's scrollable inspector
 - `r` — refresh current view
+- `:refresh 30` — refresh the active view automatically every 30 seconds
+- `:refresh off` / `:refresh on` — disable or enable automatic refresh (15 seconds by default)
+- `:refresh status` — show current automatic refresh state
 - `?` — open help
 - `q` — quit
 
@@ -94,7 +97,7 @@ npm start
 - `:virtual-machines` (`:virtual-machine`, `:vm`)
 - `:context`
 - `:clear-resource-group`
-- `:refresh`
+- `:refresh [5-3600|on|off|status]`
 - `:quit`
 
 ## Startup flow

@@ -9,6 +9,7 @@ import {
   listResources,
   listSubscriptions,
   listVirtualMachines,
+  runVirtualMachineCommand,
   verifyAzureSession,
 } from "./azure-cli.js";
 import { KNOWN_COMMANDS, normalizeCommand } from "./commands.js";
@@ -163,6 +164,7 @@ export class ArtuiApp {
   private helpModal?: blessed.Widgets.BoxElement;
   private loadingModal?: blessed.Widgets.BoxElement;
   private inspectorModal?: blessed.Widgets.BoxElement;
+  private runCommandModal?: blessed.Widgets.BoxElement;
   private inspectorSearchBox?: blessed.Widgets.TextboxElement;
   private inspectorContent = "";
   private inspectorSearchQuery = "";
@@ -179,6 +181,9 @@ export class ArtuiApp {
   private loading = false;
   private lastStatus = "Ready.";
   private loadVersion = 0;
+  private refreshIntervalSeconds = 15;
+  private refreshTimer?: NodeJS.Timeout;
+  private lastRefreshedAt?: Date;
   private searchQuery = "";
   private searchSnapshot = "";
   private commandMatches = KNOWN_COMMANDS;
@@ -193,16 +198,24 @@ export class ArtuiApp {
 
     await verifyAzureSession();
     await this.loadActiveView({ resetSelection: true });
+    this.configureAutoRefresh(15, false);
     this.setFocus("table");
   }
 
   destroy(): void {
+    if (this.refreshTimer) clearInterval(this.refreshTimer);
     this.screen.destroy();
   }
 
   private bindKeys(): void {
     this.screen.key(["C-c", "q"], () => {
-      if (this.inputMode !== "none" || this.helpModal || this.loadingModal || this.inspectorModal) {
+      if (
+        this.inputMode !== "none" ||
+        this.helpModal ||
+        this.loadingModal ||
+        this.inspectorModal ||
+        this.runCommandModal
+      ) {
         return;
       }
       this.destroy();
@@ -210,7 +223,13 @@ export class ArtuiApp {
     });
 
     this.screen.key([":"], () => {
-      if (this.inputMode !== "none" || this.helpModal || this.loadingModal || this.inspectorModal) {
+      if (
+        this.inputMode !== "none" ||
+        this.helpModal ||
+        this.loadingModal ||
+        this.inspectorModal ||
+        this.runCommandModal
+      ) {
         return;
       }
       this.openCommand();
@@ -224,14 +243,11 @@ export class ArtuiApp {
     });
 
     this.screen.key(["r"], () => {
-      if (this.inputMode !== "none" || this.helpModal || this.loadingModal || this.inspectorModal) {
-        return;
-      }
-      void this.loadActiveView();
+      void this.refreshActiveView("manual");
     });
 
     this.screen.key(["?", "f1"], () => {
-      if (this.inputMode !== "none" || this.loadingModal || this.inspectorModal) {
+      if (this.inputMode !== "none" || this.loadingModal || this.inspectorModal || this.runCommandModal) {
         return;
       }
       this.openHelp();
@@ -259,7 +275,13 @@ export class ArtuiApp {
 
   private bindEvents(): void {
     this.table.on("keypress", (_ch, key) => {
-      if (this.inputMode !== "none" || this.helpModal || this.loadingModal || this.inspectorModal) {
+      if (
+        this.inputMode !== "none" ||
+        this.helpModal ||
+        this.loadingModal ||
+        this.inspectorModal ||
+        this.runCommandModal
+      ) {
         return;
       }
 
@@ -283,6 +305,9 @@ export class ArtuiApp {
     this.table.key(["D"], () => {
       this.openVmInspector("full");
     });
+    this.table.key(["c"], () => {
+      this.openVmRunCommand();
+    });
 
     this.screen.on("resize", () => {
       this.renderAll();
@@ -290,6 +315,10 @@ export class ArtuiApp {
   }
 
   private async setActiveView(view: ResourceViewName): Promise<void> {
+    // A view transition always leaves command/search mode behind. This prevents a
+    // stale input widget or autocomplete popup from capturing keys in the new view.
+    this.resetInputState();
+
     if (this.activeView === view) {
       this.renderAll();
       return;
@@ -301,12 +330,52 @@ export class ArtuiApp {
     await this.loadActiveView({ resetSelection: true });
   }
 
+  private configureAutoRefresh(seconds: number | undefined, announce = true): void {
+    if (this.refreshTimer) clearInterval(this.refreshTimer);
+    this.refreshTimer = undefined;
+    this.refreshIntervalSeconds = seconds ?? 0;
+
+    if (this.refreshIntervalSeconds > 0) {
+      this.refreshTimer = setInterval(() => {
+        void this.refreshActiveView("automatic");
+      }, this.refreshIntervalSeconds * 1_000);
+    }
+
+    if (announce) {
+      this.lastStatus = this.refreshIntervalSeconds
+        ? `Automatic refresh enabled every ${this.refreshIntervalSeconds}s.`
+        : "Automatic refresh disabled.";
+      this.renderAll();
+    }
+  }
+
+  private async refreshActiveView(source: "manual" | "automatic"): Promise<void> {
+    if (
+      this.loading ||
+      this.inputMode !== "none" ||
+      this.helpModal ||
+      this.loadingModal ||
+      this.inspectorModal
+    ) {
+      return;
+    }
+
+    if (source === "manual") this.lastStatus = "Refreshing current view...";
+    await this.loadActiveView();
+  }
+
   private async loadActiveView(options: { resetSelection?: boolean } = {}): Promise<void> {
     const version = ++this.loadVersion;
     const previousSelectedId = this.getCurrentItemId();
 
     this.loading = true;
     this.lastStatus = `Loading ${this.activeView}...`;
+    // Do not leave stale rows from the previous view visible while Azure CLI is
+    // loading: it makes a successful command transition look unresponsive.
+    this.currentItems = [];
+    this.selectedRow = 0;
+    this.table.setLabel(` ${this.activeView} · loading `);
+    this.table.setData([["Loading"], [`Loading ${this.activeView}...`]]);
     this.renderAll();
 
     try {
@@ -354,6 +423,7 @@ export class ArtuiApp {
 
       this.baseModel = model;
       this.applyCurrentFilter(options.resetSelection, previousSelectedId);
+      this.lastRefreshedAt = new Date();
     } catch (error) {
       if (version !== this.loadVersion) {
         return;
@@ -611,13 +681,18 @@ export class ArtuiApp {
   }
 
   private closeInput(): void {
-    this.detachLiveSearch();
-    this.detachLiveCommand();
-    this.commandSuggestions.hide();
-    this.inputMode = "none";
-    this.inputBox.hide();
+    this.resetInputState();
     this.setFocus(this.focusPane);
     this.screen.render();
+  }
+
+  private resetInputState(): void {
+    this.detachLiveSearch();
+    this.detachLiveCommand();
+    this.inputMode = "none";
+    this.inputBox.setValue("");
+    this.inputBox.hide();
+    this.commandSuggestions.hide();
   }
 
   private applySearch(raw: string, updateStatus = true): void {
@@ -820,8 +895,44 @@ export class ArtuiApp {
     return trimmed;
   }
 
+  private handleRefreshCommand(args: string[]): void {
+    const option = args[0]?.toLowerCase();
+
+    if (!option) {
+      void this.refreshActiveView("manual");
+      return;
+    }
+
+    if (option === "off" || option === "disable") {
+      this.configureAutoRefresh(undefined);
+      return;
+    }
+
+    if (option === "on" || option === "enable") {
+      this.configureAutoRefresh(this.refreshIntervalSeconds || 15);
+      return;
+    }
+
+    if (option === "status") {
+      this.lastStatus = this.refreshIntervalSeconds
+        ? `Automatic refresh is enabled every ${this.refreshIntervalSeconds}s.`
+        : "Automatic refresh is disabled.";
+      this.renderAll();
+      return;
+    }
+
+    const seconds = Number(option);
+    if (!Number.isInteger(seconds) || seconds < 5 || seconds > 3_600) {
+      this.lastStatus = "Usage: :refresh [5-3600|on|off|status]";
+      this.renderAll();
+      return;
+    }
+
+    this.configureAutoRefresh(seconds);
+  }
+
   private async executeCommand(raw: string): Promise<void> {
-    const [command] = raw.trim().split(/\s+/);
+    const [command, ...args] = raw.trim().split(/\s+/);
     const name = command.replace(/^:/, "");
 
     switch (name) {
@@ -860,7 +971,7 @@ export class ArtuiApp {
         return;
       case "refresh":
       case "reload":
-        await this.loadActiveView();
+        this.handleRefreshCommand(args);
         return;
       case "quit":
       case "q":
@@ -919,6 +1030,163 @@ export class ArtuiApp {
     this.helpModal = undefined;
     this.setFocus(this.focusPane);
     this.screen.render();
+  }
+
+  private openVmRunCommand(): void {
+    if (this.activeView !== "virtual-machines" || this.runCommandModal) return;
+    const selected = this.currentItems[this.selectedRow];
+    if (!selected || !("vmSize" in selected)) return;
+
+    const vm = selected as VirtualMachine;
+    const commandId = vm.osType?.toLowerCase().includes("windows") ? "RunPowerShellScript" : "RunShellScript";
+    const modal = blessed.box({
+      parent: this.screen,
+      top: "center",
+      left: "center",
+      width: "76%",
+      height: 9,
+      label: " Azure VM Run Command ",
+      border: "line",
+      tags: true,
+      content: `{bold}${this.escapeTags(vm.name)}{/}  {gray-fg}${this.escapeTags(commandId)}{/}\n\nEnter a guest command, then press Enter to invoke it. Esc cancels.`,
+      style: { bg: "black", fg: "white", border: { fg: "yellow" } },
+    });
+    const input = blessed.textbox({
+      parent: modal,
+      bottom: 1,
+      left: 1,
+      width: "100%-2",
+      height: 1,
+      inputOnFocus: true,
+      keys: true,
+      style: { bg: "black", fg: "yellow" },
+    });
+    this.runCommandModal = modal;
+    let submitted = false;
+
+    const close = () => {
+      if (!this.runCommandModal) return;
+      modal.destroy();
+      this.runCommandModal = undefined;
+      this.table.focus();
+      this.screen.render();
+    };
+    modal.key(["escape", "q"], close);
+    input.key(["enter", "return"], () => {
+      if (submitted) return;
+      submitted = true;
+      const script = input.getValue().trim();
+      if (!script) {
+        submitted = false;
+        modal.setContent("A command is required. Enter a guest command, then press Enter.");
+        this.screen.render();
+        return;
+      }
+      close();
+      void this.invokeVmRunCommand(vm, script);
+    });
+    input.focus();
+    input.readInput(() => undefined);
+    this.screen.render();
+  }
+
+  private async invokeVmRunCommand(vm: VirtualMachine, script: string): Promise<void> {
+    this.openLoadingModal(`Running command on ${vm.name}`);
+    this.updateLoadingModal(`Invoking Azure Run Command on ${vm.name}...\n\n${script}`);
+    try {
+      const result = await runVirtualMachineCommand(this.context, vm, script);
+      this.closeLoadingModal();
+      this.openRunCommandResult(vm, script, result);
+    } catch (error) {
+      this.closeLoadingModal();
+      this.openRunCommandResult(vm, script, {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private openRunCommandResult(vm: VirtualMachine, script: string, result: Record<string, unknown>): void {
+    this.inspectorModal = blessed.box({
+      parent: this.screen,
+      top: "center",
+      left: "center",
+      width: "82%",
+      height: "78%",
+      label: " Azure VM Run Command Result ",
+      border: "line",
+      keys: true,
+      mouse: true,
+      vi: true,
+      scrollable: true,
+      alwaysScroll: true,
+      padding: { left: 1, right: 1 },
+      content: this.formattedRunCommandResult(vm, script, result),
+      style: { bg: "black", fg: "white", border: { fg: "yellow" } },
+      scrollbar: { ch: " " },
+    });
+    this.inspectorModal.key(["escape", "q"], () => this.closeInspector());
+    this.inspectorModal.focus();
+    this.screen.render();
+  }
+
+  private formattedRunCommandResult(
+    vm: VirtualMachine,
+    script: string,
+    result: Record<string, unknown>,
+  ): string {
+    const values = Array.isArray(result.value)
+      ? result.value.filter(
+          (value): value is Record<string, unknown> =>
+            typeof value === "object" && value !== null && !Array.isArray(value),
+        )
+      : [];
+
+    if (values.length === 0) {
+      const error = typeof result.error === "string" ? result.error : JSON.stringify(result, null, 2);
+      return [
+        "Run Command Result",
+        "=".repeat(72),
+        `VM:             ${vm.name}`,
+        `Command:        ${script}`,
+        "",
+        "Result:",
+        this.normalizedRunCommandMessage(error),
+        "",
+        "Press Esc or q to close.",
+      ].join("\n");
+    }
+
+    return values
+      .flatMap((value, index) => {
+        const displayStatus = typeof value.displayStatus === "string" ? value.displayStatus : "unknown";
+        const level = typeof value.level === "string" ? value.level : "unknown";
+        const code = typeof value.code === "string" ? value.code : "unknown";
+        const message = typeof value.message === "string" ? value.message : "";
+        return [
+          index === 0 ? "Run Command Result" : "Additional Result",
+          "=".repeat(72),
+          `VM:             ${vm.name}`,
+          `Command:        ${script}`,
+          `Display status: ${displayStatus}`,
+          `Level:          ${level}`,
+          `Code:           ${code}`,
+          "",
+          "Output:",
+          this.normalizedRunCommandMessage(message) || "(No command output returned.)",
+          "",
+        ];
+      })
+      .concat(["Press Esc or q to close."])
+      .join("\n");
+  }
+
+  private normalizedRunCommandMessage(message: string): string {
+    return message
+      .replace(/\r\n/g, "\n")
+      .replace(/^Enable (succeeded|failed):\s*/im, "")
+      .replace(/^\[stdout\]\s*/im, "")
+      .replace(/^\[stderr\]\s*/im, "")
+      .trim();
   }
 
   private openVmInspector(mode: "basic" | "full"): void {
@@ -1253,17 +1521,20 @@ export class ArtuiApp {
       "  :vm                 alias for :virtual-machines",
       "  :context            show active context in status bar",
       "  :clear-resource-group",
-      "  :refresh",
+      "  :refresh [5-3600|on|off|status]",
       "  :quit",
       "",
       "{bold}Navigation{/}",
       "  j/k or ↑/↓          move selection",
       "  enter               select context / open VM info",
+      "  c                   invoke Azure Run Command on the selected VM",
       "  d                   open full VM JSON in $VISUAL/$EDITOR",
       "  D                   open full VM details in artui",
       "  :                   open command line with autocomplete",
       "  /                   search within current display",
       "  r                   refresh current view",
+      "  :refresh 30         set automatic refresh to 30 seconds",
+      "  :refresh off        disable automatic refresh",
       "  ?                   help",
       "  q                   quit",
       "",
@@ -1308,7 +1579,7 @@ export class ArtuiApp {
         : this.activeView === "resource-groups"
           ? "<enter> Select scope"
           : this.activeView === "virtual-machines"
-            ? "<d> Full in editor"
+            ? "<c> Run command"
             : "<enter> Inspect resource";
     const art = [
       "     _         _____ _   _ ___ ",
@@ -1370,9 +1641,10 @@ export class ArtuiApp {
     const viewInfo = RESOURCE_MENU.find((item) => item.id === this.activeView)?.description ?? "";
     const loading = this.loading ? " | loading" : "";
     const search = this.searchQuery ? ` | /${truncate(this.searchQuery, 24)}` : "";
+    const refresh = this.refreshIntervalSeconds ? ` | auto:${this.refreshIntervalSeconds}s` : " | auto:off";
     const status = truncate(this.lastStatus, 80);
     this.footer.setContent(
-      ` j/k move | enter select | / search | : command | r refresh | ? help | q quit | ${viewInfo}${loading}${search} | ${this.escapeTags(status)}`,
+      ` j/k move | enter select | / search | : command | r refresh | ? help | q quit | ${viewInfo}${loading}${search}${refresh} | ${this.escapeTags(status)}`,
     );
   }
 
